@@ -66,7 +66,14 @@ AC_CHECK_FUNCS([arc4random getcontext getrandom memfd_create])
 AM_CONDITIONAL([HAVE_GETCONTEXT], [test "x$ac_cv_func_getcontext" = xyes])
 AM_CONDITIONAL([HAVE_MEMFD_CREATE], [test "x$ac_cv_func_memfd_create" = xyes])
 
-AX_CXX_COMPILE_STDCXX(20, , mandatory)
+AX_CXX_COMPILE_STDCXX(17, , mandatory)
+
+# Ensure C++17 is used by setting it in CXXFLAGS if not already set
+if test "x$CXXFLAGS" = "x"; then
+  CXXFLAGS="-std=c++17"
+elif test "x$(echo $CXXFLAGS | grep std=)" = "x"; then
+  CXXFLAGS="$CXXFLAGS -std=c++17"
+fi
 
 dnl Test supported warning flags.
 WARN_CXXFLAGS=

@@ -1,0 +1,458 @@
+# GitHub Actions workflow for building macOS and Windows prebuilt binaries
+# Linux builds have been removed
+
+name: Build Prebuilt Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags
+  workflow_dispatch:  # Allow manual triggering
+    inputs:
+      release_tag:
+        description: 'Release tag name'
+        required: false
+        default: 'nightly'
+
+jobs:
+
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [x86_64, arm64]
+    steps:
+    - name: Install dependencies
+      run: |
+        brew install autoconf automake libtool
+
+    - name: Checkout depot_tools
+      run: git clone --depth=1 https://chromium.googlesource.com/chromium/tools/depot_tools.git ../depot_tools
+
+    - name: Checkout breakpad
+      run: |
+        set -xe
+        PATH+=:$PWD/../depot_tools
+        gclient config --unmanaged --name=src https://github.com/${{ github.repository }}
+        gclient sync --no-history --nohooks
+
+    - name: Regenerate configure script
+      run: |
+        cd src
+        # Install autotools
+        brew install autoconf automake libtool
+        # Regenerate configure script to apply C++17 changes
+        autoreconf -fiv
+
+    - name: Configure build
+      run: |
+        cd src
+        if [ "${{ matrix.arch }}" = "arm64" ]; then
+          ./configure --host=aarch64-apple-darwin --disable-silent-rules \
+            CFLAGS="-arch arm64" CXXFLAGS="-arch arm64 -std=c++17"
+        else
+          ./configure --disable-silent-rules \
+            CFLAGS="-arch x86_64" CXXFLAGS="-arch x86_64 -std=c++17"
+        fi
+
+    - name: Build
+      run: |
+        cd src
+        make -j$(sysctl -n hw.ncpu)
+
+    - name: Build Mac dump_syms tool with Xcode
+      run: |
+        cd src
+        # Try to build the Mac-specific dump_syms tool using Xcode
+        if [ -f src/tools/mac/dump_syms/dump_syms.xcodeproj/project.pbxproj ]; then
+          echo "Building Mac dump_syms tool with Xcode..."
+          cd src/tools/mac/dump_syms
+          ARCH_FLAG="${{ matrix.arch == 'arm64' && 'arm64' || 'x86_64' }}"
+          xcodebuild -project dump_syms.xcodeproj -target dump_syms -configuration Release ARCHS="$ARCH_FLAG" ONLY_ACTIVE_ARCH=YES build
+          # Copy the built binary if it exists
+          if [ -f build/Release/dump_syms ]; then
+            cp build/Release/dump_syms ../../../../dump_syms_mac_${{ matrix.arch }}
+            echo "Successfully built Mac dump_syms tool for $ARCH_FLAG"
+            file ../../../../dump_syms_mac_${{ matrix.arch }}
+          else
+            echo "Mac dump_syms build failed or output not found"
+            find build -name "dump_syms" -type f 2>/dev/null || true
+          fi
+        else
+          echo "Xcode project not found, skipping Mac dump_syms build"
+        fi
+      continue-on-error: true
+
+    - name: Prepare artifacts
+      run: |
+        mkdir -p breakpad-macos-${{ matrix.arch }}
+        cd src
+        
+        echo "=== Checking available binaries ==="
+        find . -name "minidump_*" -type f -executable 2>/dev/null || true
+        find . -name "dump_syms*" -type f -executable 2>/dev/null || true
+        find . -name "*.a" -type f 2>/dev/null || true
+        
+        # Copy processor tools
+        if [ -f src/processor/minidump_stackwalk ]; then
+          cp src/processor/minidump_stackwalk ../breakpad-macos-${{ matrix.arch }}/
+          echo "✓ Copied minidump_stackwalk"
+        else
+          echo "✗ minidump_stackwalk not found"
+          exit 1
+        fi
+        
+        if [ -f src/processor/minidump_dump ]; then
+          cp src/processor/minidump_dump ../breakpad-macos-${{ matrix.arch }}/
+          echo "✓ Copied minidump_dump"
+        else
+          echo "✗ minidump_dump not found"
+          exit 1
+        fi
+        
+        # Copy Mac tools (check multiple possible locations)
+        if [ -f src/tools/mac/dump_syms/dump_syms_mac ]; then
+          cp src/tools/mac/dump_syms/dump_syms_mac ../breakpad-macos-${{ matrix.arch }}/dump_syms
+          echo "✓ Copied dump_syms_mac from autotools build"
+        elif [ -f dump_syms_mac_${{ matrix.arch }} ]; then
+          cp dump_syms_mac_${{ matrix.arch }} ../breakpad-macos-${{ matrix.arch }}/dump_syms
+          echo "✓ Copied dump_syms from Xcode build"
+        elif [ -f src/tools/linux/dump_syms/dump_syms ]; then
+          # Fallback to Linux dump_syms which may work on macOS for ELF files
+          cp src/tools/linux/dump_syms/dump_syms ../breakpad-macos-${{ matrix.arch }}/dump_syms_linux
+          echo "⚠ Copied Linux dump_syms as fallback"
+        else
+          echo "⚠ Warning: No dump_syms tool found."
+          echo "  You may need to build it separately using Xcode."
+          echo "  See src/tools/mac/dump_syms/dump_syms.xcodeproj for building native Mac dump_syms."
+        fi
+        
+        # Copy libraries
+        if [ -f src/client/mac/libbreakpad.a ]; then
+          cp src/client/mac/libbreakpad.a ../breakpad-macos-${{ matrix.arch }}/
+          echo "✓ Copied Mac client library"
+        elif [ -f src/client/linux/libbreakpad_client.a ]; then
+          # Use Linux client library as fallback (may work for cross-platform code)
+          cp src/client/linux/libbreakpad_client.a ../breakpad-macos-${{ matrix.arch }}/libbreakpad_client.a
+          echo "⚠ Copied Linux client library as fallback"
+        else
+          echo "⚠ Warning: No client library found"
+        fi
+        
+        if [ -f src/libbreakpad.a ]; then
+          cp src/libbreakpad.a ../breakpad-macos-${{ matrix.arch }}/libbreakpad_processor.a
+          echo "✓ Copied processor library"
+        else
+          echo "⚠ Warning: Processor library not found"
+        fi
+        
+        # Copy usage example
+        if [ -f ../examples/usage_example.sh ]; then
+          cp ../examples/usage_example.sh ../breakpad-macos-${{ matrix.arch }}/
+          chmod +x ../breakpad-macos-${{ matrix.arch }}/usage_example.sh
+        fi
+        
+        # Create README
+        cat > ../breakpad-macos-${{ matrix.arch }}/README.txt << 'EOF'
+        Breakpad macOS ${{ matrix.arch }} Binaries
+        ==========================================
+        
+        This package contains prebuilt Breakpad binaries for macOS ${{ matrix.arch }}.
+        
+        Tools included:
+        - minidump_stackwalk: Process minidump files to produce stack traces
+        - minidump_dump: Dump the contents of a minidump file
+        - dump_syms: Extract debugging symbols from Mach-O binaries (if available)
+        - dump_syms_linux: Linux version of dump_syms (if dump_syms not available)
+        
+        Libraries included:
+        - libbreakpad.a: Client library for crash reporting
+        - libbreakpad_processor.a: Processor library for minidump processing
+        
+        Note: The native Mac dump_syms tool requires building with Xcode.
+        If not included, use the Xcode project at:
+        src/tools/mac/dump_syms/dump_syms.xcodeproj
+        
+        Quick start:
+        1. Run './usage_example.sh' for usage examples
+        2. Make tools executable: chmod +x minidump_*
+        3. See README.txt for detailed information
+        
+        For more information, visit: https://github.com/google/breakpad
+        EOF
+
+    - name: Create archive
+      run: |
+        tar -czf breakpad-macos-${{ matrix.arch }}.tar.gz breakpad-macos-${{ matrix.arch }}/
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: breakpad-macos-${{ matrix.arch }}
+        path: breakpad-macos-${{ matrix.arch }}.tar.gz
+
+  build-windows:
+    runs-on: windows-2022  # Updated from windows-2019 which has been retired as of June 30, 2025
+    strategy:
+      matrix:
+        arch: [x86, x64]
+        include:
+          - arch: x86
+            platform: Win32
+            vcvars: vcvars32.bat
+          - arch: x64
+            platform: x64
+            vcvars: vcvars64.bat
+    steps:
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v1.3
+
+    - name: Setup MSYS2 (fallback for autotools)
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: ${{ matrix.arch == 'x64' && 'MINGW64' || 'MINGW32' }}
+        update: true
+        install: >-
+          git
+          make
+          autoconf
+          automake
+          libtool
+          pkg-config
+          ${{ matrix.arch == 'x64' && 'mingw-w64-x86_64-gcc' || 'mingw-w64-i686-gcc' }}
+          ${{ matrix.arch == 'x64' && 'mingw-w64-x86_64-toolchain' || 'mingw-w64-i686-toolchain' }}
+          ${{ matrix.arch == 'x64' && 'mingw-w64-x86_64-cmake' || 'mingw-w64-i686-cmake' }}
+          ${{ matrix.arch == 'x64' && 'mingw-w64-x86_64-pkg-config' || 'mingw-w64-i686-pkg-config' }}
+
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Setup build environment
+      shell: cmd
+      run: |
+        echo "Current working directory after checkout:"
+        cd
+        echo "Repository contents:"
+        dir
+        echo "Looking for src directory:"
+        if exist src (
+          echo "src directory exists, checking contents:"
+          dir src
+        ) else (
+          echo "No src directory, repository is checked out directly"
+        )
+        echo "Looking for build system files:"
+        dir *.gyp /s
+        dir *.gn /s  
+        dir BUILD.gn /s
+        dir build.gyp /s
+        dir *.sln /s
+        dir *.vcxproj /s
+        dir configure* /s
+        dir CMakeLists.txt /s
+      env:
+        MSYSTEM: ${{ matrix.arch == 'x64' && 'MINGW64' || 'MINGW32' }}
+
+    - name: Build with appropriate build system
+      shell: cmd
+      run: |
+        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\${{ matrix.vcvars }}"
+        
+        echo "Current working directory:"
+        cd
+        echo "Repository contents:"
+        dir
+        
+        REM We found configure script, so use autotools with MSYS2
+        echo "Found configure script, using autotools with MSYS2..."
+        echo "Starting MSYS2 build..."
+        
+        REM Set up the build environment and run configure/make
+        echo "Preparing build environment..."
+        C:\msys64\usr\bin\bash.exe -lc "cd '/d/a/breakpad/breakpad' && pwd && ls -la"
+        
+        echo "Ensuring configure script is executable..."
+        C:\msys64\usr\bin\bash.exe -lc "cd '/d/a/breakpad/breakpad' && chmod +x ./configure"
+        
+        echo "Running autotools build..."
+        C:\msys64\usr\bin\bash.exe -lc "cd '/d/a/breakpad/breakpad' && export CC=${{ matrix.arch == 'x64' && 'x86_64-w64-mingw32-gcc' || 'i686-w64-mingw32-gcc' }} && export CXX=${{ matrix.arch == 'x64' && 'x86_64-w64-mingw32-g++' || 'i686-w64-mingw32-g++' }} && ./configure --host=${{ matrix.arch == 'x64' && 'x86_64-w64-mingw32' || 'i686-w64-mingw32' }} --disable-shared --enable-static LDFLAGS='-static' && make -j$(nproc)"
+        
+        echo "Build completed, checking for output files..."
+        C:\msys64\usr\bin\bash.exe -lc "cd '/d/a/breakpad/breakpad' && find . -type f -name '*.exe' -o -name '*.a' -o -name '*.dll' | grep -v '\.libs/' | head -20"
+        
+        echo "Checking for tool binaries specifically..."
+        C:\msys64\usr\bin\bash.exe -lc "cd '/d/a/breakpad/breakpad' && find ./src -name 'minidump_*' -type f"
+        C:\msys64\usr\bin\bash.exe -lc "cd '/d/a/breakpad/breakpad' && find ./src -name 'dump_syms*' -type f"
+
+    - name: Prepare artifacts
+      shell: cmd
+      run: |
+        mkdir breakpad-windows-${{ matrix.arch }}
+        
+        echo "Current working directory:"
+        cd
+        echo "Searching for built executables and libraries..."
+        
+        REM Check for files directly in MSYS2 build output first
+        echo "Checking MSYS2 build output directly..."
+        C:\msys64\usr\bin\bash.exe -lc "cd '/d/a/breakpad/breakpad' && find . -type f -name '*.exe' -o -name '*.a' -o -name 'minidump_*' -o -name 'dump_syms*' | grep -v '\.libs/' | grep -v '\.deps/'"
+        
+        REM Copy MSYS2 executables (might not have .exe extension)
+        echo "Copying MSYS2 executables to artifacts directory..."
+        C:\msys64\usr\bin\bash.exe -lc "cd '/d/a/breakpad/breakpad' && for file in $(find ./src -type f -name 'minidump_*' -o -name 'dump_syms*' | grep -v '\.libs/' | grep -v '\.deps/'); do if [[ -x \"$file\" ]]; then cp -v \"$file\" \"/d/a/breakpad/breakpad/breakpad-windows-${{ matrix.arch }}/$(basename \"$file\")\"; fi; done"
+        
+        REM Look for executables with Windows extensions
+        echo "Looking for Windows executables..."
+        for /F "delims=" %%i in ('dir /b /s *.exe 2^>nul ^| findstr -v ".git"') do (
+          echo Found executable: %%i
+          for %%f in ("%%i") do (
+            echo Copying %%~nxf to breakpad-windows-${{ matrix.arch }}\
+            copy "%%i" "breakpad-windows-${{ matrix.arch }}\"
+          )
+        )
+        
+        REM Look for static libraries (.a from MSYS2/MinGW)
+        echo "Looking for MSYS2/MinGW libraries..."
+        for /F "delims=" %%i in ('dir /b /s *.a 2^>nul ^| findstr -v ".git"') do (
+          echo Found library: %%i
+          for %%f in ("%%i") do (
+            echo Copying %%~nxf to breakpad-windows-${{ matrix.arch }}\
+            copy "%%i" "breakpad-windows-${{ matrix.arch }}\"
+          )
+        )
+        
+        REM Also look for .lib files if any were generated
+        echo "Looking for Visual Studio libraries..."
+        for /F "delims=" %%i in ('dir /b /s *.lib 2^>nul ^| findstr -v ".git"') do (
+          echo Found lib file: %%i
+          for %%f in ("%%i") do (
+            echo Copying %%~nxf to breakpad-windows-${{ matrix.arch }}\
+            copy "%%i" "breakpad-windows-${{ matrix.arch }}\"
+          )
+        )
+        
+        REM Check if we got any files
+        echo "Files in artifact directory:"
+        dir breakpad-windows-${{ matrix.arch }}
+        
+        REM If no files found, this might indicate build failure
+        for /f %%i in ('dir /b breakpad-windows-${{ matrix.arch }} 2^>nul ^| find /c /v ""') do set filecount=%%i
+        if "%filecount%"=="0" (
+          echo "Warning: No artifacts were found. Build may have failed."
+          echo "Searching entire directory tree for potential outputs..."
+          dir *.exe /s
+          dir *.a /s
+          dir *.lib /s
+        )
+        
+        REM Find and copy other libraries
+        for /F "delims=" %%i in ('dir /b /s crash_generation_client.lib 2^>nul') do (
+          echo Found crash_generation_client.lib: %%i
+          copy "%%i" breakpad-windows-${{ matrix.arch }}\
+          echo "✓ Copied crash_generation_client.lib"
+        )
+        
+        for /F "delims=" %%i in ('dir /b /s crash_generation_server.lib 2^>nul') do (
+          echo Found crash_generation_server.lib: %%i
+          copy "%%i" breakpad-windows-${{ matrix.arch }}\
+          echo "✓ Copied crash_generation_server.lib"
+        )
+        
+        for /F "delims=" %%i in ('dir /b /s exception_handler.lib 2^>nul') do (
+          echo Found exception_handler.lib: %%i
+          copy "%%i" breakpad-windows-${{ matrix.arch }}\
+          echo "✓ Copied exception_handler.lib"
+        )
+        
+        REM Copy example batch file
+        if exist examples\usage_example.bat (
+          copy examples\usage_example.bat breakpad-windows-${{ matrix.arch }}\
+          echo "✓ Copied usage_example.bat"
+        )
+        
+        REM Create README
+        echo Breakpad Windows ${{ matrix.arch }} Binaries > breakpad-windows-${{ matrix.arch }}\README.txt
+        echo ========================================= >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo. >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo This package contains prebuilt Breakpad binaries for Windows ${{ matrix.arch }}. >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo. >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo Tools included: >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo - minidump_stackwalk.exe: Process minidump files to produce stack traces >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo - minidump_dump.exe: Dump the contents of a minidump file >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo - dump_syms.exe: Extract debugging symbols from binaries >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo. >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo Libraries included: >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo - common.lib: Common library for Breakpad >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo - crash_generation_client.lib: Client library for crash reporting >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo - crash_generation_server.lib: Server library for crash reporting >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo - exception_handler.lib: Exception handling library >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo. >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo For more information, visit: https://github.com/google/breakpad >> breakpad-windows-${{ matrix.arch }}\README.txt
+
+    - name: Create archive
+      shell: powershell
+      run: |
+        Compress-Archive -Path breakpad-windows-${{ matrix.arch }}\* -DestinationPath breakpad-windows-${{ matrix.arch }}.zip
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: breakpad-windows-${{ matrix.arch }}
+        path: breakpad-windows-${{ matrix.arch }}.zip
+
+  create-release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Prepare release assets
+      run: |
+        mkdir release-assets
+        find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} release-assets/ \;
+        ls -la release-assets/
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}
+        name: Breakpad Prebuilt Binaries ${{ github.event.inputs.release_tag || github.ref_name }}
+        body: >-
+          ## Breakpad Prebuilt Binaries
+          
+          This release contains prebuilt Breakpad binaries for multiple platforms:
+          
+          ### macOS
+          - `breakpad-macos-x86_64.tar.gz` - macOS Intel 64-bit binaries
+          - `breakpad-macos-arm64.tar.gz` - macOS Apple Silicon binaries
+          
+          ### Windows
+          - `breakpad-windows-x64.zip` - Windows 64-bit binaries
+          - `breakpad-windows-x86.zip` - Windows 32-bit binaries
+          
+          Each package includes:
+          - **minidump_stackwalk**: Process minidump files to produce stack traces
+          - **minidump_dump**: Dump the contents of a minidump file  
+          - **dump_syms**: Extract debugging symbols from binaries
+          - Platform-specific additional tools and libraries
+          
+          ### Usage
+          
+          1. Download the appropriate package for your platform
+          2. Extract the archive
+          3. The binaries are ready to use
+          
+          For documentation and examples, see the [Breakpad documentation](https://chromium.googlesource.com/breakpad/breakpad/+/master/docs/).
+          
+          Built from commit: ${{ github.sha }}
+        files: release-assets/*
+        draft: false
+        prerelease: ${{ github.event.inputs.release_tag == 'nightly' || contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

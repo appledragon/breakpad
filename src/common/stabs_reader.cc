@@ -41,6 +41,14 @@
 #include <stab.h>
 #include <string.h>
 
+// Fallback definitions for systems that don't have complete stab.h
+#ifndef N_UNDF
+#define N_UNDF 0x00
+#endif
+#ifndef N_SO
+#define N_SO 0x64
+#endif
+
 #include <string>
 
 #include "common/using_std_string.h"

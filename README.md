@@ -11,6 +11,23 @@ crash-reporting system.
 * Tests: [![Build+Test CI](https://github.com/google/breakpad/actions/workflows/build-test-ci.yml/badge.svg)](https://github.com/google/breakpad/actions/workflows/build-test-ci.yml) [![Build status](https://ci.appveyor.com/api/projects/status/eguv4emv2rhq68u2?svg=true)](https://ci.appveyor.com/project/vapier/breakpad)
 * Coverage [![Coverity Status](https://scan.coverity.com/projects/9215/badge.svg)](https://scan.coverity.com/projects/google-breakpad)
 
+## Getting prebuilt binaries
+
+If you prefer to use prebuilt binaries instead of building from source, you can download them from the [Releases page](https://github.com/google/breakpad/releases).
+
+We provide prebuilt binaries for:
+- **Linux** (x86_64, i386)
+- **macOS** (x86_64, arm64) 
+- **Windows** (x86, x64)
+
+Each release includes the core Breakpad tools:
+- `minidump_stackwalk` - Process minidump files to produce stack traces
+- `minidump_dump` - Dump the contents of a minidump file
+- `dump_syms` - Extract debugging symbols from binaries
+- Platform-specific additional tools and libraries
+
+Simply download the appropriate archive for your platform, extract it, and the tools are ready to use.
+
 ## Getting started (from main)
 
 1.  First, [download depot_tools](http://dev.chromium.org/developers/how-tos/install-depot-tools)
