@@ -48,10 +48,10 @@ jobs:
         cd src
         if [ "${{ matrix.arch }}" = "arm64" ]; then
           ./configure --host=aarch64-apple-darwin --disable-silent-rules \
-            CFLAGS="-arch arm64" CXXFLAGS="-arch arm64 -std=c++17"
+            CFLAGS="-arch arm64 -O2 -DNDEBUG" CXXFLAGS="-arch arm64 -std=c++17 -O2 -DNDEBUG -DBPLOG_MINIMUM_SEVERITY=SEVERITY_ERROR"
         else
           ./configure --disable-silent-rules \
-            CFLAGS="-arch x86_64" CXXFLAGS="-arch x86_64 -std=c++17"
+            CFLAGS="-arch x86_64 -O2 -DNDEBUG" CXXFLAGS="-arch x86_64 -std=c++17 -O2 -DNDEBUG -DBPLOG_MINIMUM_SEVERITY=SEVERITY_ERROR"
         fi
 
     - name: Build
@@ -153,10 +153,17 @@ jobs:
         
         # Create README
         cat > ../breakpad-macos-${{ matrix.arch }}/README.txt << 'EOF'
-        Breakpad macOS ${{ matrix.arch }} Binaries
-        ==========================================
+        Breakpad macOS ${{ matrix.arch }} Binaries (Release Build)
+        ========================================================
         
         This package contains prebuilt Breakpad binaries for macOS ${{ matrix.arch }}.
+        Built with Release optimization (-O2 -DNDEBUG) and reduced logging.
+        
+        Build Configuration:
+        - C++17 standard
+        - Release optimization (-O2)
+        - Debug assertions disabled (-DNDEBUG)
+        - Logging level set to ERROR and above only
         
         Tools included:
         - minidump_stackwalk: Process minidump files to produce stack traces
@@ -238,11 +245,12 @@ jobs:
         # Regenerate configure script to apply C++17 changes similar to Mac
         autoreconf -fiv
         
-        # Configure using MinGW with C++17 standard like Mac
-        echo "Configuring with MinGW compiler and C++17 standard..."
+        # Configure using MinGW with C++17 standard and Release flags
+        echo "Configuring with MinGW compiler, C++17 standard, and Release optimization..."
         export CC="${{ matrix.arch == 'x64' && 'x86_64-w64-mingw32-gcc' || 'i686-w64-mingw32-gcc' }}"
         export CXX="${{ matrix.arch == 'x64' && 'x86_64-w64-mingw32-g++' || 'i686-w64-mingw32-g++' }}"
-        export CXXFLAGS="-std=c++17"
+        export CFLAGS="-O2 -DNDEBUG"
+        export CXXFLAGS="-std=c++17 -O2 -DNDEBUG -DBPLOG_MINIMUM_SEVERITY=SEVERITY_ERROR"
         export LDFLAGS="-static"
         
         ./configure --host=${{ matrix.arch == 'x64' && 'x86_64-w64-mingw32' || 'i686-w64-mingw32' }} \
@@ -252,7 +260,7 @@ jobs:
       shell: msys2 {0}
       run: |
         cd /d/a/breakpad/breakpad
-        echo "Building with MinGW compiler using C++17 standard..."
+        echo "Building with MinGW compiler using C++17 standard and Release optimization..."
         
         # Build using make
         echo "Starting build process..."
@@ -325,12 +333,19 @@ jobs:
         
         # Create README
         cat > breakpad-windows-${{ matrix.arch }}/README.txt << 'EOF'
-        Breakpad Windows ${{ matrix.arch }} Binaries
-        ==========================================
+        Breakpad Windows ${{ matrix.arch }} Binaries (Release Build)
+        ==========================================================
         
         This package contains prebuilt Breakpad binaries for Windows ${{ matrix.arch }}.
-        Built with MinGW and C++17 standard, similar to macOS configuration.
+        Built with MinGW, C++17 standard, and Release optimization.
         Built on Windows Server 2022 runner.
+        
+        Build Configuration:
+        - C++17 standard
+        - Release optimization (-O2)
+        - Debug assertions disabled (-DNDEBUG)
+        - Logging level set to ERROR and above only
+        - Static linking for better portability
         
         Tools included:
         - minidump_stackwalk.exe: Process minidump files to produce stack traces
@@ -404,7 +419,7 @@ jobs:
         cd src
         ./configure --disable-silent-rules \
           CC=${{ matrix.cc }} CXX=${{ matrix.cxx }} \
-          CXXFLAGS="-std=c++17"
+          CFLAGS="-O2 -DNDEBUG" CXXFLAGS="-std=c++17 -O2 -DNDEBUG -DBPLOG_MINIMUM_SEVERITY=SEVERITY_ERROR"
 
     - name: Build
       run: |
@@ -483,14 +498,20 @@ jobs:
         
         # Create README
         cat > ../breakpad-linux-${{ matrix.arch }}/README.txt << 'EOF'
-        Breakpad Linux ${{ matrix.arch }} Binaries
-        ==========================================
+        Breakpad Linux ${{ matrix.arch }} Binaries (Release Build)
+        ========================================================
         
         This package contains prebuilt Breakpad binaries for Linux ${{ matrix.arch }}.
-        Built with GCC and C++17 standard, similar to macOS configuration.
+        Built with GCC, C++17 standard, and Release optimization.
         
         Note: ARM64 Linux builds are temporarily disabled due to cross-compilation complexity.
         Currently only x86_64 Linux builds are provided.
+        
+        Build Configuration:
+        - C++17 standard
+        - Release optimization (-O2)
+        - Debug assertions disabled (-DNDEBUG)
+        - Logging level set to ERROR and above only
         
         Tools included:
         - minidump_stackwalk: Process minidump files to produce stack traces
@@ -547,9 +568,17 @@ jobs:
         tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}
         name: Breakpad Prebuilt Binaries ${{ github.event.inputs.release_tag || github.ref_name }}
         body: >-
-          ## Breakpad Prebuilt Binaries
+          ## Breakpad Prebuilt Binaries (Release Build)
           
-          This release contains prebuilt Breakpad binaries for multiple platforms:
+          This release contains prebuilt Breakpad binaries for multiple platforms,
+          built with **Release optimization** and **reduced debug logging** for production use:
+          
+          ### Build Configuration
+          - **C++17 standard** for modern C++ compatibility
+          - **Release optimization** (-O2) for better performance
+          - **Debug assertions disabled** (-DNDEBUG) for production deployment
+          - **Reduced logging level** (ERROR and above only) to minimize output
+          - **Static linking** (where applicable) for better portability
           
           ### macOS
           - `breakpad-macos-x86_64.tar.gz` - macOS Intel 64-bit binaries
@@ -568,11 +597,18 @@ jobs:
           - **dump_syms**: Extract debugging symbols from binaries
           - Platform-specific additional tools and libraries
           
+          ### Key Improvements in Release Build
+          
+          ✅ **Optimized Performance**: Release builds with -O2 optimization  
+          ✅ **Reduced Debug Output**: Only ERROR-level logs and above  
+          ✅ **Production Ready**: Debug assertions disabled with -DNDEBUG  
+          ✅ **Better Portability**: Static linking where possible  
+          
           ### Usage
           
           1. Download the appropriate package for your platform
           2. Extract the archive
-          3. The binaries are ready to use
+          3. The binaries are ready to use with minimal logging output
           
           For documentation and examples, see the [Breakpad documentation](https://chromium.googlesource.com/breakpad/breakpad/+/master/docs/).
           
