@@ -1,5 +1,4 @@
-# GitHub Actions workflow for building macOS and Windows prebuilt binaries
-# Linux builds have been removed
+# GitHub Actions workflow for building macOS, Linux and Windows prebuilt binaries
 
 name: Build Prebuilt Binaries
 
@@ -360,8 +359,168 @@ jobs:
         name: breakpad-windows-${{ matrix.arch }}
         path: breakpad-windows-${{ matrix.arch }}.zip
 
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [x86_64, arm64]
+        include:
+          - arch: x86_64
+            target: x86_64-linux-gnu
+            packages: gcc g++
+          - arch: arm64
+            target: aarch64-linux-gnu
+            packages: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+    steps:
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y autoconf automake libtool pkg-config ${{ matrix.packages }}
+        # Install additional development tools
+        sudo apt-get install -y build-essential
+
+    - name: Checkout depot_tools
+      run: git clone --depth=1 https://chromium.googlesource.com/chromium/tools/depot_tools.git ../depot_tools
+
+    - name: Checkout breakpad
+      run: |
+        set -xe
+        PATH+=:$PWD/../depot_tools
+        gclient config --unmanaged --name=src https://github.com/${{ github.repository }}
+        gclient sync --no-history --nohooks
+
+    - name: Regenerate configure script
+      run: |
+        cd src
+        # Regenerate configure script to apply C++17 changes similar to Mac
+        autoreconf -fiv
+
+    - name: Configure build
+      run: |
+        cd src
+        if [ "${{ matrix.arch }}" = "arm64" ]; then
+          ./configure --host=${{ matrix.target }} --disable-silent-rules \
+            CC=aarch64-linux-gnu-gcc CXX=aarch64-linux-gnu-g++ \
+            CXXFLAGS="-std=c++17"
+        else
+          ./configure --disable-silent-rules \
+            CXXFLAGS="-std=c++17"
+        fi
+
+    - name: Build
+      run: |
+        cd src
+        make -j$(nproc)
+
+    - name: Prepare artifacts
+      run: |
+        mkdir -p breakpad-linux-${{ matrix.arch }}
+        cd src
+        
+        echo "=== Checking available binaries ==="
+        find . -name "minidump_*" -type f -executable 2>/dev/null || true
+        find . -name "dump_syms*" -type f -executable 2>/dev/null || true
+        find . -name "*.a" -type f 2>/dev/null || true
+        
+        # Copy processor tools
+        if [ -f src/processor/minidump_stackwalk ]; then
+          cp src/processor/minidump_stackwalk ../breakpad-linux-${{ matrix.arch }}/
+          echo "✓ Copied minidump_stackwalk"
+        else
+          echo "✗ minidump_stackwalk not found"
+          exit 1
+        fi
+        
+        if [ -f src/processor/minidump_dump ]; then
+          cp src/processor/minidump_dump ../breakpad-linux-${{ matrix.arch }}/
+          echo "✓ Copied minidump_dump"
+        else
+          echo "✗ minidump_dump not found"
+          exit 1
+        fi
+        
+        # Copy Linux tools
+        if [ -f src/tools/linux/dump_syms/dump_syms ]; then
+          cp src/tools/linux/dump_syms/dump_syms ../breakpad-linux-${{ matrix.arch }}/
+          echo "✓ Copied dump_syms"
+        else
+          echo "⚠ Warning: No dump_syms tool found."
+        fi
+        
+        if [ -f src/tools/linux/symupload/sym_upload ]; then
+          cp src/tools/linux/symupload/sym_upload ../breakpad-linux-${{ matrix.arch }}/
+          echo "✓ Copied sym_upload"
+        else
+          echo "⚠ Warning: No sym_upload tool found."
+        fi
+        
+        if [ -f src/tools/linux/md2core/minidump-2-core ]; then
+          cp src/tools/linux/md2core/minidump-2-core ../breakpad-linux-${{ matrix.arch }}/
+          echo "✓ Copied minidump-2-core"
+        else
+          echo "⚠ Warning: No minidump-2-core tool found."
+        fi
+        
+        # Copy libraries
+        if [ -f src/client/linux/libbreakpad_client.a ]; then
+          cp src/client/linux/libbreakpad_client.a ../breakpad-linux-${{ matrix.arch }}/
+          echo "✓ Copied Linux client library"
+        else
+          echo "⚠ Warning: No client library found"
+        fi
+        
+        if [ -f src/libbreakpad.a ]; then
+          cp src/libbreakpad.a ../breakpad-linux-${{ matrix.arch }}/libbreakpad_processor.a
+          echo "✓ Copied processor library"
+        else
+          echo "⚠ Warning: Processor library not found"
+        fi
+        
+        # Copy usage example
+        if [ -f ../examples/usage_example.sh ]; then
+          cp ../examples/usage_example.sh ../breakpad-linux-${{ matrix.arch }}/
+          chmod +x ../breakpad-linux-${{ matrix.arch }}/usage_example.sh
+        fi
+        
+        # Create README
+        cat > ../breakpad-linux-${{ matrix.arch }}/README.txt << 'EOF'
+        Breakpad Linux ${{ matrix.arch }} Binaries
+        ==========================================
+        
+        This package contains prebuilt Breakpad binaries for Linux ${{ matrix.arch }}.
+        Built with GCC and C++17 standard, similar to macOS configuration.
+        
+        Tools included:
+        - minidump_stackwalk: Process minidump files to produce stack traces
+        - minidump_dump: Dump the contents of a minidump file
+        - dump_syms: Extract debugging symbols from ELF binaries (if available)
+        - sym_upload: Upload symbols to symbol server (if available)
+        - minidump-2-core: Convert minidump to core file (if available)
+        
+        Libraries included:
+        - libbreakpad_client.a: Client library for crash reporting
+        - libbreakpad_processor.a: Processor library for minidump processing
+        
+        Quick start:
+        1. Run './usage_example.sh' for usage examples
+        2. Make tools executable: chmod +x minidump_*
+        3. See README.txt for detailed information
+        
+        For more information, visit: https://github.com/google/breakpad
+        EOF
+
+    - name: Create archive
+      run: |
+        tar -czf breakpad-linux-${{ matrix.arch }}.tar.gz breakpad-linux-${{ matrix.arch }}/
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: breakpad-linux-${{ matrix.arch }}
+        path: breakpad-linux-${{ matrix.arch }}.tar.gz
+
   create-release:
-    needs: [build-macos, build-windows]
+    needs: [build-macos, build-linux, build-windows]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     steps:
@@ -393,6 +552,10 @@ jobs:
           ### Windows
           - `breakpad-windows-x64.zip` - Windows 64-bit binaries
           - `breakpad-windows-x86.zip` - Windows 32-bit binaries
+          
+          ### Linux
+          - `breakpad-linux-x86_64.tar.gz` - Linux x86_64 binaries
+          - `breakpad-linux-arm64.tar.gz` - Linux ARM64 binaries
           
           Each package includes:
           - **minidump_stackwalk**: Process minidump files to produce stack traces
