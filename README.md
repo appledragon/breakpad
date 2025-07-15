@@ -13,7 +13,7 @@ crash-reporting system.
 
 ## Getting prebuilt binaries
 
-If you prefer to use prebuilt binaries instead of building from source, you can download them from the [Releases page](https://github.com/google/breakpad/releases).
+If you prefer to use prebuilt binaries instead of building from source, you can download them from the [Releases page](https://github.com/appledragon/breakpad/releases).
 
 We provide prebuilt binaries for:
 - **Linux** (x86_64, i386)
