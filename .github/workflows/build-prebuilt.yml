@@ -363,14 +363,18 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [x86_64, arm64]
         include:
           - arch: x86_64
             target: x86_64-linux-gnu
-            packages: gcc g++
-          - arch: arm64
-            target: aarch64-linux-gnu
-            packages: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            packages: gcc g++ zlib1g-dev
+            cc: gcc
+            cxx: g++
+          # ARM64 cross-compilation is complex, disabled for now
+          # - arch: arm64
+          #   target: aarch64-linux-gnu
+          #   packages: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          #   cc: aarch64-linux-gnu-gcc
+          #   cxx: aarch64-linux-gnu-g++
     steps:
     - name: Install dependencies
       run: |
@@ -398,14 +402,9 @@ jobs:
     - name: Configure build
       run: |
         cd src
-        if [ "${{ matrix.arch }}" = "arm64" ]; then
-          ./configure --host=${{ matrix.target }} --disable-silent-rules \
-            CC=aarch64-linux-gnu-gcc CXX=aarch64-linux-gnu-g++ \
-            CXXFLAGS="-std=c++17"
-        else
-          ./configure --disable-silent-rules \
-            CXXFLAGS="-std=c++17"
-        fi
+        ./configure --disable-silent-rules \
+          CC=${{ matrix.cc }} CXX=${{ matrix.cxx }} \
+          CXXFLAGS="-std=c++17"
 
     - name: Build
       run: |
@@ -490,6 +489,9 @@ jobs:
         This package contains prebuilt Breakpad binaries for Linux ${{ matrix.arch }}.
         Built with GCC and C++17 standard, similar to macOS configuration.
         
+        Note: ARM64 Linux builds are temporarily disabled due to cross-compilation complexity.
+        Currently only x86_64 Linux builds are provided.
+        
         Tools included:
         - minidump_stackwalk: Process minidump files to produce stack traces
         - minidump_dump: Dump the contents of a minidump file
@@ -500,6 +502,10 @@ jobs:
         Libraries included:
         - libbreakpad_client.a: Client library for crash reporting
         - libbreakpad_processor.a: Processor library for minidump processing
+        
+        Dependencies:
+        - Built with zlib support for compression
+        - Compatible with modern Linux distributions
         
         Quick start:
         1. Run './usage_example.sh' for usage examples
@@ -555,7 +561,6 @@ jobs:
           
           ### Linux
           - `breakpad-linux-x86_64.tar.gz` - Linux x86_64 binaries
-          - `breakpad-linux-arm64.tar.gz` - Linux ARM64 binaries
           
           Each package includes:
           - **minidump_stackwalk**: Process minidump files to produce stack traces
