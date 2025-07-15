@@ -192,7 +192,7 @@ jobs:
         path: breakpad-macos-${{ matrix.arch }}.tar.gz
 
   build-windows:
-    runs-on: windows-2022  # Updated from windows-2019 which has been retired as of June 30, 2025
+    runs-on: windows-2019
     strategy:
       matrix:
         arch: [x86, x64]
@@ -200,14 +200,16 @@ jobs:
           - arch: x86
             platform: Win32
             vcvars: vcvars32.bat
+            msbuild_platform: Win32
           - arch: x64
             platform: x64
             vcvars: vcvars64.bat
+            msbuild_platform: x64
     steps:
     - name: Setup MSBuild
       uses: microsoft/setup-msbuild@v1.3
 
-    - name: Setup MSYS2 (fallback for autotools)
+    - name: Setup MSYS2 for autotools
       uses: msys2/setup-msys2@v2
       with:
         msystem: ${{ matrix.arch == 'x64' && 'MINGW64' || 'MINGW32' }}
@@ -219,72 +221,54 @@ jobs:
           automake
           libtool
           pkg-config
-          ${{ matrix.arch == 'x64' && 'mingw-w64-x86_64-gcc' || 'mingw-w64-i686-gcc' }}
-          ${{ matrix.arch == 'x64' && 'mingw-w64-x86_64-toolchain' || 'mingw-w64-i686-toolchain' }}
-          ${{ matrix.arch == 'x64' && 'mingw-w64-x86_64-cmake' || 'mingw-w64-i686-cmake' }}
-          ${{ matrix.arch == 'x64' && 'mingw-w64-x86_64-pkg-config' || 'mingw-w64-i686-pkg-config' }}
 
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
         fetch-depth: 1
 
-    - name: Setup build environment
-      shell: cmd
+    - name: Regenerate configure script
+      shell: msys2 {0}
       run: |
-        echo "Current working directory after checkout:"
-        cd
-        echo "Repository contents:"
-        dir
-        echo "Looking for src directory:"
-        if exist src (
-          echo "src directory exists, checking contents:"
-          dir src
-        ) else (
-          echo "No src directory, repository is checked out directly"
-        )
-        echo "Looking for build system files:"
-        dir *.gyp /s
-        dir *.gn /s  
-        dir BUILD.gn /s
-        dir build.gyp /s
-        dir *.sln /s
-        dir *.vcxproj /s
-        dir configure* /s
-        dir CMakeLists.txt /s
-      env:
-        MSYSTEM: ${{ matrix.arch == 'x64' && 'MINGW64' || 'MINGW32' }}
+        cd $GITHUB_WORKSPACE
+        # Regenerate configure script to apply C++17 changes similar to Mac
+        autoreconf -fiv
 
-    - name: Build with appropriate build system
+    - name: Setup build environment and configure
       shell: cmd
       run: |
-        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\${{ matrix.vcvars }}"
+        call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\${{ matrix.vcvars }}"
         
+        echo "Setting up environment for Visual Studio 2019..."
         echo "Current working directory:"
         cd
         echo "Repository contents:"
         dir
         
-        REM We found configure script, so use autotools with MSYS2
-        echo "Found configure script, using autotools with MSYS2..."
-        echo "Starting MSYS2 build..."
+        echo "Using autotools configure with VS2019 compiler..."
         
-        REM Set up the build environment and run configure/make
-        echo "Preparing build environment..."
-        C:\msys64\usr\bin\bash.exe -lc "cd '/d/a/breakpad/breakpad' && pwd && ls -la"
+        REM Configure using autotools with VS2019 settings similar to Mac
+        C:\msys64\usr\bin\bash.exe -lc "cd '$GITHUB_WORKSPACE' && export CC='cl.exe' && export CXX='cl.exe' && export CFLAGS='/std:c11' && export CXXFLAGS='/std:c++17 /EHsc' && export LDFLAGS='/MACHINE:${{ matrix.platform }}' && ./configure --host=${{ matrix.arch == 'x64' && 'x86_64-pc-mingw32' || 'i686-pc-mingw32' }} --disable-shared --enable-static --disable-silent-rules"
+
+    - name: Build with Visual Studio 2019
+      shell: cmd
+      run: |
+        call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\${{ matrix.vcvars }}"
         
-        echo "Ensuring configure script is executable..."
-        C:\msys64\usr\bin\bash.exe -lc "cd '/d/a/breakpad/breakpad' && chmod +x ./configure"
+        echo "Building with Visual Studio 2019 using autotools..."
+        echo "Current working directory:"
+        cd
         
-        echo "Running autotools build..."
-        C:\msys64\usr\bin\bash.exe -lc "cd '/d/a/breakpad/breakpad' && export CC=${{ matrix.arch == 'x64' && 'x86_64-w64-mingw32-gcc' || 'i686-w64-mingw32-gcc' }} && export CXX=${{ matrix.arch == 'x64' && 'x86_64-w64-mingw32-g++' || 'i686-w64-mingw32-g++' }} && ./configure --host=${{ matrix.arch == 'x64' && 'x86_64-w64-mingw32' || 'i686-w64-mingw32' }} --disable-shared --enable-static LDFLAGS='-static' && make -j$(nproc)"
+        REM Build using make with VS2019 compiler
+        echo "Starting build process..."
+        C:\msys64\usr\bin\bash.exe -lc "cd '$GITHUB_WORKSPACE' && make -j$(nproc)"
         
         echo "Build completed, checking for output files..."
-        C:\msys64\usr\bin\bash.exe -lc "cd '/d/a/breakpad/breakpad' && find . -type f -name '*.exe' -o -name '*.a' -o -name '*.dll' | grep -v '\.libs/' | head -20"
+        C:\msys64\usr\bin\bash.exe -lc "cd '$GITHUB_WORKSPACE' && find . -type f -name '*.exe' -o -name '*.lib' -o -name '*.dll' | grep -v '\.libs/' | head -20"
         
         echo "Checking for tool binaries specifically..."
-        C:\msys64\usr\bin\bash.exe -lc "cd '/d/a/breakpad/breakpad' && find ./src -name 'minidump_*' -type f"
-        C:\msys64\usr\bin\bash.exe -lc "cd '/d/a/breakpad/breakpad' && find ./src -name 'dump_syms*' -type f"
+        C:\msys64\usr\bin\bash.exe -lc "cd '$GITHUB_WORKSPACE' && find ./src -name 'minidump_*' -type f"
+        C:\msys64\usr\bin\bash.exe -lc "cd '$GITHUB_WORKSPACE' && find ./src -name 'dump_syms*' -type f"
 
     - name: Prepare artifacts
       shell: cmd
@@ -295,13 +279,13 @@ jobs:
         cd
         echo "Searching for built executables and libraries..."
         
-        REM Check for files directly in MSYS2 build output first
-        echo "Checking MSYS2 build output directly..."
-        C:\msys64\usr\bin\bash.exe -lc "cd '/d/a/breakpad/breakpad' && find . -type f -name '*.exe' -o -name '*.a' -o -name 'minidump_*' -o -name 'dump_syms*' | grep -v '\.libs/' | grep -v '\.deps/'"
+        REM Check for files directly in build output
+        echo "Checking VS2019 build output..."
+        C:\msys64\usr\bin\bash.exe -lc "cd '$GITHUB_WORKSPACE' && find . -type f -name '*.exe' -o -name '*.lib' -o -name 'minidump_*' -o -name 'dump_syms*' | grep -v '\.libs/' | grep -v '\.deps/'"
         
-        REM Copy MSYS2 executables (might not have .exe extension)
-        echo "Copying MSYS2 executables to artifacts directory..."
-        C:\msys64\usr\bin\bash.exe -lc "cd '/d/a/breakpad/breakpad' && for file in $(find ./src -type f -name 'minidump_*' -o -name 'dump_syms*' | grep -v '\.libs/' | grep -v '\.deps/'); do if [[ -x \"$file\" ]]; then cp -v \"$file\" \"/d/a/breakpad/breakpad/breakpad-windows-${{ matrix.arch }}/$(basename \"$file\")\"; fi; done"
+        REM Copy executables
+        echo "Copying executables to artifacts directory..."
+        C:\msys64\usr\bin\bash.exe -lc "cd '$GITHUB_WORKSPACE' && for file in $(find ./src -type f -name 'minidump_*' -o -name 'dump_syms*' | grep -v '\.libs/' | grep -v '\.deps/'); do if [[ -x \"$file\" ]]; then cp -v \"$file\" \"$GITHUB_WORKSPACE/breakpad-windows-${{ matrix.arch }}/$(basename \"$file\")\"; fi; done"
         
         REM Look for executables with Windows extensions
         echo "Looking for Windows executables..."
@@ -313,9 +297,9 @@ jobs:
           )
         )
         
-        REM Look for static libraries (.a from MSYS2/MinGW)
-        echo "Looking for MSYS2/MinGW libraries..."
-        for /F "delims=" %%i in ('dir /b /s *.a 2^>nul ^| findstr -v ".git"') do (
+        REM Look for static libraries (.lib from VS2019)
+        echo "Looking for Visual Studio 2019 libraries..."
+        for /F "delims=" %%i in ('dir /b /s *.lib 2^>nul ^| findstr -v ".git"') do (
           echo Found library: %%i
           for %%f in ("%%i") do (
             echo Copying %%~nxf to breakpad-windows-${{ matrix.arch }}\
@@ -323,10 +307,10 @@ jobs:
           )
         )
         
-        REM Also look for .lib files if any were generated
-        echo "Looking for Visual Studio libraries..."
-        for /F "delims=" %%i in ('dir /b /s *.lib 2^>nul ^| findstr -v ".git"') do (
-          echo Found lib file: %%i
+        REM Also look for .a files if any were generated by autotools
+        echo "Looking for autotools libraries..."
+        for /F "delims=" %%i in ('dir /b /s *.a 2^>nul ^| findstr -v ".git"') do (
+          echo Found library: %%i
           for %%f in ("%%i") do (
             echo Copying %%~nxf to breakpad-windows-${{ matrix.arch }}\
             copy "%%i" "breakpad-windows-${{ matrix.arch }}\"
@@ -343,8 +327,8 @@ jobs:
           echo "Warning: No artifacts were found. Build may have failed."
           echo "Searching entire directory tree for potential outputs..."
           dir *.exe /s
-          dir *.a /s
           dir *.lib /s
+          dir *.a /s
         )
         
         REM Find and copy other libraries
@@ -376,7 +360,8 @@ jobs:
         echo Breakpad Windows ${{ matrix.arch }} Binaries > breakpad-windows-${{ matrix.arch }}\README.txt
         echo ========================================= >> breakpad-windows-${{ matrix.arch }}\README.txt
         echo. >> breakpad-windows-${{ matrix.arch }}\README.txt
-        echo This package contains prebuilt Breakpad binaries for Windows ${{ matrix.arch }}. >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo This package contains prebuilt Breakpad binaries for Windows ${{ matrix.arch }} built with Visual Studio 2019. >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo Built with C++17 standard, similar to macOS configuration. >> breakpad-windows-${{ matrix.arch }}\README.txt
         echo. >> breakpad-windows-${{ matrix.arch }}\README.txt
         echo Tools included: >> breakpad-windows-${{ matrix.arch }}\README.txt
         echo - minidump_stackwalk.exe: Process minidump files to produce stack traces >> breakpad-windows-${{ matrix.arch }}\README.txt
