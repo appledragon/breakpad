@@ -192,7 +192,7 @@ jobs:
         path: breakpad-macos-${{ matrix.arch }}.tar.gz
 
   build-windows:
-    runs-on: windows-2019
+    runs-on: windows-2022  # Updated to use windows-2022 as windows-2019 has been retired
     strategy:
       matrix:
         arch: [x86, x64]
@@ -237,29 +237,53 @@ jobs:
     - name: Setup build environment and configure
       shell: cmd
       run: |
-        call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\${{ matrix.vcvars }}"
+        REM Try different Visual Studio 2019 installation paths on Windows Server 2022
+        if exist "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\${{ matrix.vcvars }}" (
+          call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\${{ matrix.vcvars }}"
+        ) else if exist "C:\Program Files\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\${{ matrix.vcvars }}" (
+          call "C:\Program Files\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\${{ matrix.vcvars }}"
+        ) else if exist "C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\VC\Auxiliary\Build\${{ matrix.vcvars }}" (
+          call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\VC\Auxiliary\Build\${{ matrix.vcvars }}"
+        ) else if exist "C:\Program Files\Microsoft Visual Studio\2019\Professional\VC\Auxiliary\Build\${{ matrix.vcvars }}" (
+          call "C:\Program Files\Microsoft Visual Studio\2019\Professional\VC\Auxiliary\Build\${{ matrix.vcvars }}"
+        ) else (
+          REM Fall back to VS2022 if VS2019 is not available
+          echo "Visual Studio 2019 not found, falling back to VS2022..."
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\${{ matrix.vcvars }}"
+        )
         
-        echo "Setting up environment for Visual Studio 2019..."
+        echo "Setting up environment for Visual Studio build..."
         echo "Current working directory:"
         cd
         echo "Repository contents:"
         dir
         
-        echo "Using autotools configure with VS2019 compiler..."
+        echo "Using autotools configure with Visual Studio compiler..."
         
-        REM Configure using autotools with VS2019 settings similar to Mac
+        REM Configure using autotools with Visual Studio settings similar to Mac
         C:\msys64\usr\bin\bash.exe -lc "cd '$GITHUB_WORKSPACE' && export CC='cl.exe' && export CXX='cl.exe' && export CFLAGS='/std:c11' && export CXXFLAGS='/std:c++17 /EHsc' && export LDFLAGS='/MACHINE:${{ matrix.platform }}' && ./configure --host=${{ matrix.arch == 'x64' && 'x86_64-pc-mingw32' || 'i686-pc-mingw32' }} --disable-shared --enable-static --disable-silent-rules"
 
-    - name: Build with Visual Studio 2019
+    - name: Build with Visual Studio
       shell: cmd
       run: |
-        call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\${{ matrix.vcvars }}"
+        REM Ensure Visual Studio environment is loaded
+        if exist "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\${{ matrix.vcvars }}" (
+          call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\${{ matrix.vcvars }}"
+        ) else if exist "C:\Program Files\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\${{ matrix.vcvars }}" (
+          call "C:\Program Files\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\${{ matrix.vcvars }}"
+        ) else if exist "C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\VC\Auxiliary\Build\${{ matrix.vcvars }}" (
+          call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\VC\Auxiliary\Build\${{ matrix.vcvars }}"
+        ) else if exist "C:\Program Files\Microsoft Visual Studio\2019\Professional\VC\Auxiliary\Build\${{ matrix.vcvars }}" (
+          call "C:\Program Files\Microsoft Visual Studio\2019\Professional\VC\Auxiliary\Build\${{ matrix.vcvars }}"
+        ) else (
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\${{ matrix.vcvars }}"
+        )
         
-        echo "Building with Visual Studio 2019 using autotools..."
+        echo "Building with Visual Studio using autotools..."
         echo "Current working directory:"
         cd
         
-        REM Build using make with VS2019 compiler
+        REM Build using make with Visual Studio compiler
         echo "Starting build process..."
         C:\msys64\usr\bin\bash.exe -lc "cd '$GITHUB_WORKSPACE' && make -j$(nproc)"
         
@@ -360,8 +384,9 @@ jobs:
         echo Breakpad Windows ${{ matrix.arch }} Binaries > breakpad-windows-${{ matrix.arch }}\README.txt
         echo ========================================= >> breakpad-windows-${{ matrix.arch }}\README.txt
         echo. >> breakpad-windows-${{ matrix.arch }}\README.txt
-        echo This package contains prebuilt Breakpad binaries for Windows ${{ matrix.arch }} built with Visual Studio 2019. >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo This package contains prebuilt Breakpad binaries for Windows ${{ matrix.arch }} built with Visual Studio (2019 preferred, 2022 fallback). >> breakpad-windows-${{ matrix.arch }}\README.txt
         echo Built with C++17 standard, similar to macOS configuration. >> breakpad-windows-${{ matrix.arch }}\README.txt
+        echo Built on Windows Server 2022 runner. >> breakpad-windows-${{ matrix.arch }}\README.txt
         echo. >> breakpad-windows-${{ matrix.arch }}\README.txt
         echo Tools included: >> breakpad-windows-${{ matrix.arch }}\README.txt
         echo - minidump_stackwalk.exe: Process minidump files to produce stack traces >> breakpad-windows-${{ matrix.arch }}\README.txt
